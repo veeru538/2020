@@ -1,0 +1,253 @@
+The Master-Slave replication in MySQL databases provides load balancing for the databases. But it does not provide any failover scenario. If the Master server breaks, we cannot execute queries directly on the slave server. In addition to load balancing, if we need failover in our scenario, we can set up 2 MySQL instances in Master-Master replication.
+
+This article shows how to set up MySQL master-master replication on Ubuntu 16.04 server.
+
+In Master master replication, both the servers play the role of master and slave for each other like in the following diagram:
+
+MySQL Master-Master configuration
+
+Each server serves as Master for the other slave at the same time. So if you are familiar with the Master-Slave replication in MySQL, this must be a piece of cake for you.
+
+Prerequisites
+
+This article assumes that you are running Linux based OS. MySQL server is also required. Following OS/packages are used for this demo:
+
+    Ubuntu 16.04 LTS (Xenial Xerus)
+    mysqld Ver 5.7.12-0ubuntu1.1
+
+We are also using 2 servers that will be in Master-Master configuration. These servers are called:
+
+    LinoxideMasterLeft (IP - 192.168.1.101)
+    LinoxideMasterRight (IP - 192.168.1.102)
+
+This setup will work on other Linux based OS’s as well but some configuration file paths might change.
+
+Now let’s start with the steps used for MySQL replication:
+Step 1: Install the MySQL server
+
+The MySQL server needs to be installed on both servers. This step is same for both servers:
+
+raghu@LinoxideMasterLeft:~$ sudo apt-get update && sudo apt-get install mysql-client mysql-server
+
+root@LinoxideMasterRight:~# sudo apt-get update && sudo apt-get install mysql-client mysql-server
+
+This installation will prompt you to choose a MySQL root password. Chose a strong password and keep it safe with you.
+
+Now depending upon your use case, you might want to replicate one database or multiple databases.
+
+Use Case 1: You need to replicate only selected number of databases. The database names for replication are specified with “binlog_do_db” option in MySQL configuration file.
+
+Use Case 2: You need all of your databases to replicate except a few. You may want to create new databases in the future and adding them to the list manually could be a problem. So in this case, don’t use the option “binlog_do_db”. MySQL will replicate all of your databases by default if you don’t put this option in the configuration. We just put the databases that don’t need to be replicated (like “information_schema” and “mysql”) with the option “binlog_ignore_db”.
+
+You can also use both of these options simultaneously if that is what you want. For the purpose of this demo, we will replicate only 1 database(as in case 1).
+
+The MySQL instances participating in replication are part of a (replication) group. All the servers in this group have unique ID. While configuring our servers for replication, we need to make sure that this ID is not duplicated. We will see this in a while.
+Step2: Configure MySQL to listen on Private IP address
+
+In our setup, the MySQL configuration is included from files in another directory. Open MySQL configuration file /etc/mysql/my.cnf to confirm that the line with “/etc/mysql/mysql.conf.d/” is present. (This file does nothing but includes the files from other directories.)
+
+Make sure that the following line is present in this file:
+
+!includedir /etc/mysql/mysql.conf.d/
+
+Now we will edit the file “/etc/mysql/mysql.conf.d/mysqld.cnf”.
+
+The first thing that we want to do is enable MySQL daemon to listen on the private IP address. By default, the daemon binds itself with the loopback IP address. (You can also make it listen on the public IP address, but the DB servers generally do not need to be accessed directly from the internet). So we change the line:
+
+bind-address = 127.0.0.1
+
+To look like:
+
+bind-address = 192.168.1.101
+
+Make sure that you change this IP address to your server’s IP address.
+
+We make the same changes on the other MySQL server.
+
+Check /etc/mysql/my.cnf:
+
+!includedir /etc/mysql/mysql.conf.d/
+
+And make changes in /etc/mysql/mysql.conf.d/mysqld.cnf:
+
+bind-address = 192.168.1.102
+
+Step 3: Replication configuration
+
+Now that our MySQL servers are set to listen on the Private IP addresses, it’s time to enable replication in MySQL configuration. Let’s start with LinoxideMasterLeft server.
+
+In the same configuration file, look for the following lines:
+
+# The following can be used as easy to replay backup logs or for replication.
+# note: if you are setting up a replication slave, see README.Debian about
+# other settings you may need to change.
+#server-id = 1
+#log_bin = /var/log/mysql/mysql-bin.log
+expire_logs_days = 10
+max_binlog_size = 100M
+#binlog_do_db = include_database_name
+#binlog_ignore_db = include_database_name
+
+We need to uncomment these lines and mention the database that we are going to replicate. After changes, it will look like this:
+
+# The following can be used as easy to replay backup logs or for replication.
+# note: if you are setting up a replication slave, see README.Debian about
+# other settings you may need to change.
+server-id = 1
+#log_bin = /var/log/mysql/mysql-bin.log
+expire_logs_days = 10
+max_binlog_size = 100M
+binlog_do_db = linoxidedb
+#binlog_ignore_db = include_database_name
+
+As we are replicating only one database, we don’t need to uncomment the line with “#binlog_ignore_db”.
+
+Make the corresponding changes in the other server LinoxideMasterRight as well:
+
+# The following can be used as easy to replay backup logs or for replication.
+# note: if you are setting up a replication slave, see README.Debian about
+# other settings you may need to change.
+server-id = 2
+log_bin = /var/log/mysql/mysql-bin.log
+expire_logs_days = 10
+max_binlog_size = 100M
+binlog_do_db = linoxidedb
+#binlog_ignore_db = include_database_name
+
+Now that the configuration files are changed on both servers, we will restart the MySQL service:
+
+root@LinoxideMasterLeft:~# service mysql restart
+
+And on the other server as well:
+
+root@LinoxideMasterRight:~# service mysql restart
+
+We can check that our configuration changes are loaded and server is listening on the correct IP address:
+
+root@LinoxideMasterLeft:~# netstat -ntpl | grep mysql
+tcp 0 0 192.168.1.101:3306 0.0.0.0:* LISTEN 1924/mysqld
+
+And
+
+root@LinoxideMasterRight:~# netstat -ntpl | grep mysql
+tcp 0 0 192.168.1.102:3306 0.0.0.0:* LISTEN 1422/mysqld
+
+Step 4: Create Replication user
+
+For MySQL replication, we need to create a new user for replication that will have replication permission on all the databases. Let’s create this user with the below MySQL queries:
+
+Open the MySQL prompt on LinoxideMasterLeft server with the following command:
+
+root@LinoxideMasterLeft:~# mysql -u root -p
+Enter password:
+
+Provide your password that you chose while MySQL server installation. It will drop you at the MySQL prompt. Enter the following commands at this prompt:
+
+mysql> CREATE USER 'linoxideleftuser'@'%' identified by 'replicatepass';
+Query OK, 0 rows affected (0.09 sec)
+
+mysql> GRANT REPLICATION SLAVE ON *.* TO 'linoxideleftuser'@'%';
+Query OK, 0 rows affected (0.00 sec)
+
+Now we create the similar user on the other server LinoxideMasterRight:
+
+mysql> CREATE USER 'linoxiderightuser'@'%' identified by 'replicatepass';
+Query OK, 0 rows affected (0.04 sec)
+
+mysql> GRANT REPLICATION SLAVE ON *.* TO 'linoxiderightuser'@'%';
+Query OK, 0 rows affected (0.00 sec)
+
+Step 5: Configure MySQL Master on both servers
+
+Now in this last step, we tell each server that other server is the master server from which it is syncing.
+
+Step 5.1: Tell LinoxideMasterRight about its master:
+
+First of all, we will check the Master status of LinoxideMasterLeft server. Run the following command at MySQL prompt to check the master status:
+
+mysql> show master status;
++------------------+----------+--------------+------------------+-------------------+
+| File | Position | Binlog_Do_DB | Binlog_Ignore_DB | Executed_Gtid_Set |
++------------------+----------+--------------+------------------+-------------------+
+| mysql-bin.000001 | 1447 | linoxidedb | | |
++------------------+----------+--------------+------------------+-------------------+
+1 row in set (0.00 sec)
+
+Here, we need 2 pieces of information: the File (mysql-bin.000001) and the Position (1447) for setting up this server as master of LinoxideMasterRight (along with the username and password we set in the last step).
+
+Run the following command on LinoxideMasterRight to tell it that LinoxideMasterLeft is its master:
+
+mysql> stop slave;
+Query OK, 0 rows affected, 1 warning (0.00 sec)
+
+mysql> CHANGE MASTER TO MASTER_HOST = 'LinoxideMasterLeft', MASTER_USER = 'linoxideleftuser', MASTER_PASSWORD = 'replicatepass', MASTER_LOG_FILE = 'mysql-bin.000001', MASTER_LOG_POS = 1447;
+Query OK, 0 rows affected, 2 warnings (0.07 sec)
+
+mysql> start slave;
+Query OK, 0 rows affected (0.00 sec)
+
+Repeat same steps for the other server.
+
+Step 5.2: Tell LinoxideMasterLeft about its master
+
+Run the following command on LinoxideMasterRight to check its master status:
+
+mysql> show master status;
++------------------+----------+--------------+------------------+-------------------+
+| File | Position | Binlog_Do_DB | Binlog_Ignore_DB | Executed_Gtid_Set |
++------------------+----------+--------------+------------------+-------------------+
+| mysql-bin.000001 | 621 | linoxidedb | | |
++------------------+----------+--------------+------------------+-------------------+
+
+Configure the LinoxideMasterLeft and tell it about its master by running the following command:
+
+mysql> stop slave;
+Query OK, 0 rows affected, 1 warning (0.00 sec)
+
+mysql> CHANGE MASTER TO MASTER_HOST = 'LinoxideMasterRight', MASTER_USER = 'linoxiderightuser', MASTER_PASSWORD = 'replicatepass', MASTER_LOG_FILE = 'mysql-bin.000001', MASTER_LOG_POS = 621;
+Query OK, 0 rows affected, 2 warnings (0.02 sec)
+
+mysql> start slave;
+Query OK, 0 rows affected (0.00 sec)
+
+That’s it. Phew... It was lots of configurations. Now that we have done so much work, let’s check that our configuration is working. Note that the next step is optional and is not part of MySQL Master-Master replication setup.
+Step 6: Test Mysql replication
+
+Let’s create the database on LinoxideMasterLeft:
+
+mysql> create database linoxidedb;
+Query OK, 1 row affected (0.00 sec)
+
+Let’s check if this database is created on LinoxideMasterRight:
+
+mysql> show databases;
++--------------------+
+| Database |
++--------------------+
+| information_schema |
+| linoxidedb |
+| mysql |
+| performance_schema |
+| sys |
++--------------------+
+5 rows in set (0.00 sec)
+
+Now we will create a table in this database from LinoxideMasterRight and check from the other server.
+Run the following command on LinoxideMasterRight:
+
+mysql> CREATE TABLE linoxidedb.testuser ( id INT, name VARCHAR(20));
+Query OK, 0 rows affected (0.40 sec)
+
+Let’s check this table from LinoxideMasterLeft:
+
+mysql> show tables;
++----------------------+
+| Tables_in_linoxidedb |
++----------------------+
+| testuser |
++----------------------+
+1 row in set (0.00 sec)
+
+Voila. Our replication is working fine.
+
+As you could see, the Master-Master Replication is nothing more than configuring 2 servers in Master-Slave mode for each other. In Master-Slave configuration, you need to make sure that on Slave server, no query is executed (except replication queries), else replication breaks. But in the case of Master-Master replication, the query can run on any of the 2 servers, thus providing us with a fault-tolerant and safe environment
